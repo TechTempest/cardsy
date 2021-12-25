@@ -31,11 +31,7 @@ async function generateCards() {
 
   // filtering out shapes from all the selected widgets.
   selectedWidgets = selectedWidgets.filter((item) => {
-    return item.type === "SHAPE" ||
-      item.type === "TEXT" ||
-      item.type === "STICKER"
-      ? true
-      : false;
+    return ["SHAPE", "TEXT", "STICKER"].includes(item.type);
   });
 
   if (selectedWidgets.length == 0) {
@@ -43,25 +39,26 @@ async function generateCards() {
     return;
   }
 
-  //prompt
-  // show number of selected eligible widget
-  // check list
-  // delete original content
-  // include in a frame? (textfield to accept frame title)
-  let cardsGenerated = [];
-  for (const item of selectedWidgets) {
-    let c = await generatCardFor(item, item.x + 800, item.y);
-    cardsGenerated.push(c);
-  }
+  const cardsObjects = selectedWidgets.map((item) =>
+    generatCardObjectFor(item, item.x + 800, item.y)
+  );
+  const cardsTags = selectedWidgets.map((item) => extractTags(item));
 
-  let cardsID = cardsGenerated.map((item) => item.id);
+  const cardsGenerated = await miro.board.widgets.create(cardsObjects);
+  const cardsIDs = cardsGenerated.map((item) => item.id);
 
-  await miro.board.selection.selectWidgets(cardsID);
-  console.log(`Cardsy generated ${cardsID.length} cards for you.`);
-  miro.showNotification(`Cardsy generated ${cardsID.length} cards.`);
+  // sync tags with generated cards
+  const updatedTagsObjects = getUpdatedTagsObjects(cardsIDs, cardsTags);
+  const updatedtags = getSanitizedUpdatedTags(updatedTagsObjects);
+
+  await miro.board.tags.update(updatedtags);
+  await miro.board.selection.selectWidgets(cardsIDs);
+
+  console.log(`Cardsy generated ${cardsIDs.length} cards for you.`);
+  miro.showNotification(`Cardsy generated ${cardsIDs.length} cards.`);
 }
 
-async function generatCardFor(object, x, y) {
+const generatCardObjectFor = (object, x, y) => {
   let cardColor;
 
   if (object.type === "SHAPE") {
@@ -98,7 +95,7 @@ async function generatCardFor(object, x, y) {
     cardColor = object.style.stickerBackgroundColor;
   }
 
-  let c = await miro.board.widgets.create({
+  const cardObject = {
     type: "card",
     title: object.plainText,
     x: x,
@@ -106,21 +103,51 @@ async function generatCardFor(object, x, y) {
     style: {
       backgroundColor: cardColor,
     },
-  });
+  };
+  return cardObject;
+};
 
-  if (object.type === "STICKER") {
-    // get all the tags of stickers
-    let stickerTags = object.tags;
-    // update widgetIds of each tags with adding generated cards id
-    for (tag of stickerTags) {
-      let freshTagObject = await miro.board.tags.get({ id: tag.id });
-      let updatedWidgetsIds = freshTagObject[0].widgetIds;
-      updatedWidgetsIds.push(c[0].id);
-      await miro.board.tags.update({
-        id: tag.id,
-        widgetIds: updatedWidgetsIds,
-      });
-    }
+const extractTags = (object) => {
+  if (object.type !== "STICKER") {
+    return [];
+  } else {
+    return object.tags.map((tag) => {
+      return { id: tag.id, widgetIds: tag.widgetIds };
+    });
   }
-  return c[0];
-}
+};
+
+const addObjectToTag = (tag, objectId) => {
+  return {
+    id: tag.id,
+    widgetIds: [...tag.widgetIds, objectId],
+  };
+};
+
+const getUpdatedTagsObjects = (cardsIDs, cardsTags) => {
+  const updatedTagsObjects = [];
+  for (let i = 0; i < cardsIDs.length; i++) {
+    const cardtags = cardsTags[i];
+    const updatedCardTag = cardtags.map((tag) => {
+      return addObjectToTag(tag, cardsIDs[i]);
+    });
+    updatedTagsObjects.push(updatedCardTag);
+  }
+  return updatedTagsObjects;
+};
+
+const getSanitizedUpdatedTags = (tags) => {
+  const flattenedTags = _.flatten(tags);
+
+  const groupedTags = _.groupBy(flattenedTags, "id");
+
+  const tagsWithUpdatedWidgetIds = _.keys(groupedTags).map((key) => {
+    return {
+      id: key,
+      widgetIds: _.uniq(
+        _.flatten(groupedTags[key].map((tag) => tag.widgetIds))
+      ),
+    };
+  });
+  return tagsWithUpdatedWidgetIds;
+};
